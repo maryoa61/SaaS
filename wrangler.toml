@@ -1,11 +1,11 @@
-name = "store-bot"
+name = "saas"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "store-bot"
-database_id = "REPLACE_WITH_YOUR_D1_ID"
+database_id = "b585f905-3675-4988-be4a-79b323f80853"
 
 # Secrets (wrangler secret put ...):
 #   MASTER_KEY    -> base64 of 32 random bytes  (openssl rand -base64 32)
