@@ -1,0 +1,12 @@
+name = "store-bot"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "store-bot"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+# Secrets (wrangler secret put ...):
+#   MASTER_KEY    -> base64 of 32 random bytes  (openssl rand -base64 32)
+#   ADMIN_SECRET  -> long random string for /admin/* endpoints
