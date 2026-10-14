@@ -1,4 +1,5 @@
-name = "saas"
+keep_vars = true
+name = "store-bot"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
 
