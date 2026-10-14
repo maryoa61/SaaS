@@ -1,8 +1,22 @@
-import { getUser, setState, upsertUser } from './db';
+import { getProduct, getUser, setState, upsertUser } from './db';
+import { randomHex } from './crypto';
+import { purchase } from './purchase';
 import { TgError, tg } from './telegram';
 import type { Env, Tenant } from './types';
 import { BTN, MAIN_KB, esc, fmtToman, fmtUsd } from './ui';
-import { categoryView, mainMenuView, productView, searchView, topView, type View } from './views';
+import {
+  categoryView,
+  confirmView,
+  insufficientView,
+  mainMenuView,
+  orderDetailView,
+  ordersView,
+  productView,
+  searchView,
+  successView,
+  topView,
+  type View,
+} from './views';
 
 export async function handleUpdate(env: Env, tenant: Tenant, token: string, update: any): Promise<void> {
   if (update.message) return onMessage(env, tenant, token, update.message);
@@ -34,7 +48,7 @@ async function onMessage(env: Env, tenant: Tenant, token: string, msg: any) {
   if (text.startsWith('/start')) {
     await setState(env.DB, tenant.id, uid, null);
     await send(`${esc(tenant.welcome_text)}`, MAIN_KB);
-    return sendView(token, chatId, await categoryView(env.DB, tenant.id, 0, 0));
+    return void (await sendView(token, chatId, await categoryView(env.DB, tenant.id, 0, 0)));
   }
   if (text === BTN.shop) {
     await setState(env.DB, tenant.id, uid, null);
@@ -56,10 +70,7 @@ async function onMessage(env: Env, tenant: Tenant, token: string, msg: any) {
   }
   if (text === BTN.orders) {
     await setState(env.DB, tenant.id, uid, null);
-    await send('📦 <b>سفارش‌های من</b>\n\nهنوز سفارشی ثبت نکرده‌اید.', {
-      inline_keyboard: [[{ text: '🏠 منو', callback_data: 'm' }]],
-    });
-    return;
+    return void (await sendView(token, chatId, await ordersView(env.DB, tenant.id, uid, 0)));
   }
   if (text === BTN.support) {
     await setState(env.DB, tenant.id, uid, null);
@@ -104,14 +115,47 @@ async function onCallback(env: Env, tenant: Tenant, token: string, cq: any) {
     tg(token, 'answerCallbackQuery', { callback_query_id: cq.id, text, show_alert: alert }).catch(() => {});
 
   if (!cq.message) return void (await ack());
-
-  // Actions that answer with an alert
-  if (data.startsWith('b:')) return void (await ack('ثبت سفارش در مرحله بعد فعال می‌شود 🛠', true));
-  if (data === 'w:add') return void (await ack('شارژ کیف پول در مرحله بعد فعال می‌شود 🛠', true));
-
-  void ack();
+  const uid: number = cq.from.id;
   const [kind, a, b] = data.split(':');
 
+  if (kind === 'w' && a === 'add') {
+    return void (await ack('شارژ آنلاین به‌زودی فعال می‌شود. فعلاً از بخش پشتیبانی درخواست شارژ بدهید.', true));
+  }
+
+  // --- buy: confirmation screen ---
+  if (kind === 'b') {
+    const [p, u] = await Promise.all([getProduct(env.DB, tenant.id, Number(a)), getUser(env.DB, tenant.id, uid)]);
+    if (!p || p.avail <= 0) {
+      await ack('این محصول ناموجود است', true);
+      return show(token, cq, await productView(env.DB, tenant, Number(a)));
+    }
+    void ack();
+    return show(token, cq, confirmView(tenant, p, u?.balance_cents ?? 0, randomHex(4)));
+  }
+
+  // --- buy: execute ---
+  if (kind === 'y') {
+    if (!b || !/^[0-9a-f]{8}$/.test(b)) return void (await ack());
+    const res = await purchase(env.DB, tenant.id, uid, Number(a), b);
+    if (res.ok) {
+      void ack();
+      return show(token, cq, successView(res.title, res.priceCents, res.payload, res.balanceCents, res.orderId));
+    }
+    switch (res.reason) {
+      case 'duplicate':
+        return void (await ack('در حال پردازش…'));
+      case 'insufficient': {
+        void ack();
+        const p = await getProduct(env.DB, tenant.id, Number(a));
+        return show(token, cq, insufficientView(p, res.balanceCents ?? 0));
+      }
+      default:
+        await ack('این محصول ناموجود است', true);
+        return show(token, cq, await productView(env.DB, tenant, Number(a)));
+    }
+  }
+
+  void ack();
   switch (kind) {
     case 'noop':
       return;
@@ -123,8 +167,12 @@ async function onCallback(env: Env, tenant: Tenant, token: string, cq: any) {
       return show(token, cq, await productView(env.DB, tenant, Number(a)));
     case 'top':
       return show(token, cq, await topView(env.DB, tenant.id));
+    case 'os':
+      return show(token, cq, await ordersView(env.DB, tenant.id, uid, Number(a) || 0));
+    case 'o':
+      return show(token, cq, await orderDetailView(env.DB, tenant.id, uid, Number(a)));
     case 's':
-      await setState(env.DB, tenant.id, cq.from.id, 'search');
+      await setState(env.DB, tenant.id, uid, 'search');
       await tg(token, 'sendMessage', {
         chat_id: cq.message.chat.id,
         text: '🔍 نام محصول را بفرستید:',
@@ -133,7 +181,7 @@ async function onCallback(env: Env, tenant: Tenant, token: string, cq: any) {
       return;
     case 'w': {
       if (a !== 'inv') return;
-      const link = `https://t.me/${tenant.bot_username}?start=ref_${cq.from.id}`;
+      const link = `https://t.me/${tenant.bot_username}?start=ref_${uid}`;
       await tg(token, 'sendMessage', {
         chat_id: cq.message.chat.id,
         text: `🎁 <b>دعوت دوستان</b>\n\nلینک اختصاصی شما:\n${link}`,

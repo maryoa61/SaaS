@@ -1,29 +1,35 @@
-# Store Bot — مرحله ۱ (هسته چند مستاجری)
+# Store Bot — مرحله ۱ و ۲
 
-## راه‌اندازی
+## نصب تازه
 ```bash
 npm install
 npx wrangler d1 create store-bot          # database_id را در wrangler.toml بگذار
-npm run db:init                           # ساخت جدول‌ها
+npm run db:init                           # schema.sql (همه‌ی جدول‌ها)
 openssl rand -base64 32 | npx wrangler secret put MASTER_KEY
-npx wrangler secret put ADMIN_SECRET      # یک رشته‌ی تصادفی طولانی
+npx wrangler secret put ADMIN_SECRET
 npm run deploy
 ```
 
-## ثبت فروشگاه (مستاجر) جدید
-```bash
-curl -X POST https://<WORKER>.workers.dev/admin/tenants \
-  -H "Authorization: Bearer <ADMIN_SECRET>" -H "content-type: application/json" \
-  -d '{"bot_token":"123:ABC","owner_tg_id":111111111}'
-# -> {"id":"a1b2c3d4e5f6","bot":"@MyShopBot"}
+## ارتقا از مرحله ۱ به ۲
+۱. محتوای `migrations/002_orders.sql` را یک‌بار در Console دیتابیس D1 اجرا کن.
+۲. فایل‌های `src/` را جایگزین کن و commit بزن.
+۳. (اختیاری) برای آزادسازی خودکار سفارش‌های نیمه‌تمام، این را به `wrangler.toml` اضافه کن:
+```toml
+[triggers]
+crons = ["*/10 * * * *"]
 ```
 
-## افزودن دسته و محصول (موقت، تا پنل مرحله ۶)
+## دستورات ادمین (موقت، تا پنل مرحله ۶)
 ```bash
-T=a1b2c3d4e5f6
-curl -X POST https://<WORKER>.workers.dev/admin/tenants/$T/categories \
-  -H "Authorization: Bearer <ADMIN_SECRET>" -d '{"title":"بازی ها"}'
-curl -X POST https://<WORKER>.workers.dev/admin/tenants/$T/products \
-  -H "Authorization: Bearer <ADMIN_SECRET>" \
-  -d '{"title":"Clash of Clans - Pile","price_usd":7.93,"category_id":1,"stock":10}'
+W="https://<worker>.workers.dev"; A="<ADMIN_SECRET>"; T="<tenant id>"
+
+# افزودن موجودی تحویلی (هر خط = یک آیتم)
+curl -X POST $W/admin/tenants/$T/products/1/items -H "Authorization: Bearer $A" \
+  -H "content-type: application/json" \
+  -d '{"items":["user1@mail.com:pass1","user2@mail.com:pass2"]}'
+
+# شارژ کیف پول کاربر (کاربر باید قبلاً /start زده باشد)
+curl -X POST $W/admin/tenants/$T/users/<tg_id>/credit -H "Authorization: Bearer $A" \
+  -d '{"amount_usd":10}'
 ```
+موجودی هر محصول = تعداد آیتم‌های فروخته‌نشده‌ی آن.

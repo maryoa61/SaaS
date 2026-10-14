@@ -41,6 +41,19 @@ export interface Product {
   title: string;
   description: string | null;
   price_cents: number;
-  stock: number | null;
   sales_count: number;
+  /** number of unsold items in product_items (computed in queries) */
+  avail: number;
+}
+
+export interface Order {
+  id: number;
+  tenant_id: string;
+  user_id: number;
+  product_id: number;
+  title: string;
+  price_cents: number;
+  status: 'pending' | 'delivered' | 'failed';
+  delivered_payload: string | null;
+  created_at: number;
 }

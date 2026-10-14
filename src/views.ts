@@ -1,6 +1,17 @@
-import { countProducts, getCategory, getProduct, listCategories, listProducts, searchProducts, topProducts } from './db';
+import {
+  countOrders,
+  countProducts,
+  getCategory,
+  getOrder,
+  getProduct,
+  listCategories,
+  listOrders,
+  listProducts,
+  searchProducts,
+  topProducts,
+} from './db';
 import type { Product, Tenant } from './types';
-import { esc, fmtToman, fmtUsd } from './ui';
+import { esc, fmtDate, fmtToman, fmtUsd } from './ui';
 
 type Btn = { text: string; callback_data: string } | { text: string; url: string };
 export interface View {
@@ -13,10 +24,18 @@ const MENU: Btn = { text: '🏠 منو', callback_data: 'm' };
 
 const productRow = (p: Product): Btn[] => [
   {
-    text: `${p.title} — ${fmtUsd(p.price_cents)}${p.stock === 0 ? ' ❌' : ''}`,
+    text: `${p.title} — ${fmtUsd(p.price_cents)}${p.avail <= 0 ? ' ❌' : ''}`,
     callback_data: `p:${p.id}`,
   },
 ];
+
+function pager(prefix: string, page: number, pages: number): Btn[] {
+  const nav: Btn[] = [];
+  if (page > 0) nav.push({ text: '«', callback_data: `${prefix}:${page - 1}` });
+  nav.push({ text: `${page + 1}/${pages}`, callback_data: 'noop' });
+  if (page < pages - 1) nav.push({ text: '»', callback_data: `${prefix}:${page + 1}` });
+  return nav;
+}
 
 export function mainMenuView(tenant: Tenant): View {
   return {
@@ -73,7 +92,7 @@ export async function productView(db: D1Database, tenant: Tenant, id: number): P
       reply_markup: { inline_keyboard: [[{ text: '⬅️ بازگشت', callback_data: 'c:0:0' }, MENU]] },
     };
   }
-  const inStock = p.stock === null || p.stock > 0;
+  const inStock = p.avail > 0;
   let text = `📦 <b>${esc(p.title)}</b>\n`;
   if (p.description) text += `\n${esc(p.description)}\n`;
   text += `\n💵 قیمت: <b>${fmtUsd(p.price_cents)}</b> (≈ ${fmtToman(p.price_cents, tenant.usd_to_toman)})`;
@@ -102,5 +121,89 @@ export async function searchView(db: D1Database, tenantId: string, q: string): P
   return {
     text: prods.length ? `🔍 نتایج برای «${esc(q)}»:` : `🔍 محصولی برای «${esc(q)}» پیدا نشد.`,
     reply_markup: { inline_keyboard: rows },
+  };
+}
+
+// ---- purchase flow ----
+export function confirmView(tenant: Tenant, p: Product, balanceCents: number, nonce: string): View {
+  const enough = balanceCents >= p.price_cents;
+  let text =
+    `🛒 <b>تأیید خرید</b>\n\n📦 ${esc(p.title)}\n` +
+    `💵 قیمت: <b>${fmtUsd(p.price_cents)}</b> (≈ ${fmtToman(p.price_cents, tenant.usd_to_toman)})\n` +
+    `💰 موجودی شما: <b>${fmtUsd(balanceCents)}</b>`;
+  if (!enough) text += `\n\n❌ موجودی کافی نیست (کسری: ${fmtUsd(p.price_cents - balanceCents)}).`;
+
+  const rows: Btn[][] = [];
+  rows.push(
+    enough
+      ? [{ text: '✅ تأیید و پرداخت', callback_data: `y:${p.id}:${nonce}` }]
+      : [{ text: '➕ افزایش موجودی', callback_data: 'w:add' }],
+  );
+  rows.push([{ text: '⬅️ بازگشت', callback_data: `p:${p.id}` }, MENU]);
+  return { text, reply_markup: { inline_keyboard: rows } };
+}
+
+export function insufficientView(p: Product | null, balanceCents: number): View {
+  const need = p ? p.price_cents - balanceCents : 0;
+  return {
+    text:
+      `❌ <b>موجودی کیف پول کافی نیست</b>\n\n` +
+      (p ? `💵 قیمت: ${fmtUsd(p.price_cents)}\n` : '') +
+      `💰 موجودی شما: ${fmtUsd(balanceCents)}` +
+      (need > 0 ? `\nکسری: <b>${fmtUsd(need)}</b>` : ''),
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '➕ افزایش موجودی', callback_data: 'w:add' }],
+        [{ text: '⬅️ بازگشت', callback_data: p ? `p:${p.id}` : 'c:0:0' }, MENU],
+      ],
+    },
+  };
+}
+
+const MAX_PAYLOAD = 3000;
+const payloadBlock = (payload: string) =>
+  `<pre>${esc(payload.length > MAX_PAYLOAD ? payload.slice(0, MAX_PAYLOAD) + '\n…' : payload)}</pre>`;
+
+export function successView(title: string, priceCents: number, payload: string, balanceCents: number, orderId: number): View {
+  return {
+    text:
+      `✅ <b>خرید موفق</b> (سفارش #${orderId})\n\n📦 ${esc(title)}\n💵 ${fmtUsd(priceCents)}\n\n` +
+      `🔑 اطلاعات تحویلی:\n${payloadBlock(payload)}\n💰 موجودی باقی‌مانده: ${fmtUsd(balanceCents)}`,
+    reply_markup: {
+      inline_keyboard: [[{ text: '📦 سفارش‌های من', callback_data: 'os:0' }, MENU]],
+    },
+  };
+}
+
+// ---- orders ----
+export async function ordersView(db: D1Database, tenantId: string, tgId: number, page: number): Promise<View> {
+  const total = await countOrders(db, tenantId, tgId);
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const p = Math.min(Math.max(0, page), pages - 1);
+  const orders = await listOrders(db, tenantId, tgId, PAGE_SIZE, p * PAGE_SIZE);
+
+  const rows: Btn[][] = orders.map((o) => [
+    { text: `#${o.id} ${o.title} — ${fmtUsd(o.price_cents)}`, callback_data: `o:${o.id}` },
+  ]);
+  if (pages > 1) rows.push(pager('os', p, pages));
+  rows.push([MENU]);
+
+  return {
+    text: total
+      ? `📦 <b>سفارش‌های من</b>\n\nبرای مشاهده‌ی اطلاعات هر سفارش، آن را انتخاب کنید:${pages > 1 ? `\n\nصفحه ${p + 1} از ${pages}` : ''}`
+      : '📦 <b>سفارش‌های من</b>\n\nهنوز سفارشی ثبت نکرده‌اید.',
+    reply_markup: { inline_keyboard: rows },
+  };
+}
+
+export async function orderDetailView(db: D1Database, tenantId: string, tgId: number, orderId: number): Promise<View> {
+  const o = await getOrder(db, tenantId, tgId, orderId);
+  const back: Btn[] = [{ text: '⬅️ بازگشت', callback_data: 'os:0' }, MENU];
+  if (!o) return { text: 'سفارش پیدا نشد.', reply_markup: { inline_keyboard: [back] } };
+  return {
+    text:
+      `📦 <b>سفارش #${o.id}</b>\n\n${esc(o.title)}\n💵 ${fmtUsd(o.price_cents)}\n🕒 ${fmtDate(o.created_at)}\n\n` +
+      `🔑 اطلاعات تحویلی:\n${payloadBlock(o.delivered_payload ?? '')}`,
+    reply_markup: { inline_keyboard: [back] },
   };
 }

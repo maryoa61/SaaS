@@ -22,3 +22,6 @@ export const fmtUsd = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
 export const fmtToman = (cents: number, rate: number) =>
   `${Math.round((cents / 100) * rate).toLocaleString('en-US')} تومان`;
+
+export const fmtDate = (unixSeconds: number) =>
+  new Date(unixSeconds * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
