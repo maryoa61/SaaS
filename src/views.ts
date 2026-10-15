@@ -207,3 +207,25 @@ export async function orderDetailView(db: D1Database, tenantId: string, tgId: nu
     reply_markup: { inline_keyboard: [back] },
   };
 }
+
+// ---- wallet top-up ----
+export function depositMethodsView(s: Record<string, string>): View {
+  const rows: Btn[][] = [];
+  if (s.card_number) rows.push([{ text: '💳 کارت به کارت', callback_data: 'd:m:card' }]);
+  if (s.usdt_trc20_address) rows.push([{ text: '🪙 تتر (USDT - TRC20)', callback_data: 'd:m:usdt' }]);
+  const any = rows.length > 0;
+  rows.push([MENU]);
+  return {
+    text: any
+      ? '➕ <b>افزایش موجودی</b>\n\nروش پرداخت را انتخاب کنید:'
+      : '➕ <b>افزایش موجودی</b>\n\nفعلاً روش پرداختی فعال نیست. با پشتیبانی تماس بگیرید.',
+    reply_markup: { inline_keyboard: rows },
+  };
+}
+
+export function depositAmountPrompt(minUsd: number): View {
+  return {
+    text: `💵 مبلغ شارژ را به <b>دلار</b> بفرستید (فقط عدد، مثلاً 10).\nحداقل: ${fmtUsd(Math.round(minUsd * 100))}`,
+    reply_markup: { inline_keyboard: [[{ text: '❌ انصراف', callback_data: 'dx:0' }]] },
+  };
+}

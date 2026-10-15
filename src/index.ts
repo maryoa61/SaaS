@@ -1,21 +1,12 @@
-import { decrypt, encrypt, randomHex, safeEq } from './crypto';
+import { encrypt, randomHex, safeEq } from './crypto';
 import { getTenant, getUser } from './db';
 import { handleUpdate } from './handlers';
+import { expireDeposits, pollUsdt } from './payments';
 import { releaseStalePending } from './purchase';
 import { tg } from './telegram';
+import { getToken } from './token';
 import type { Env } from './types';
 import { fmtUsd } from './ui';
-
-// token cache per isolate: tenantId -> { enc, token }
-const tokenCache = new Map<string, { enc: string; token: string }>();
-
-async function getToken(env: Env, tenantId: string, enc: string) {
-  const hit = tokenCache.get(tenantId);
-  if (hit && hit.enc === enc) return hit.token;
-  const token = await decrypt(env.MASTER_KEY, enc);
-  tokenCache.set(tenantId, { enc, token });
-  return token;
-}
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
@@ -30,9 +21,15 @@ export default {
     return new Response('ok');
   },
 
-  // Cron: free items held by orders that never finished (see wrangler.toml [triggers])
+  // Cron (see wrangler.toml [triggers]): free stale reservations, expire old deposits, detect USDT payments
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(releaseStalePending(env.DB));
+    ctx.waitUntil(
+      (async () => {
+        await releaseStalePending(env.DB);
+        await expireDeposits(env.DB);
+        await pollUsdt(env);
+      })().catch((e) => console.error('cron failed', e)),
+    );
   },
 };
 
@@ -54,6 +51,7 @@ async function webhook(req: Request, env: Env, ctx: ExecutionContext, tenantId: 
 
 // ---- Temporary admin API (replaced by the seller panel in step 6) ----
 async function admin(req: Request, env: Env, ctx: ExecutionContext, url: URL, parts: string[]) {
+  if (!env.ADMIN_SECRET || env.ADMIN_SECRET.length < 16) return new Response('admin disabled', { status: 503 });
   const auth = req.headers.get('Authorization') ?? '';
   if (!safeEq(auth, `Bearer ${env.ADMIN_SECRET}`)) return new Response('forbidden', { status: 403 });
   if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
@@ -102,6 +100,25 @@ async function admin(req: Request, env: Env, ctx: ExecutionContext, url: URL, pa
   const tenantId = parts[2];
   const tenant = await getTenant(env.DB, tenantId);
   if (!tenant) return json({ error: 'tenant not found' }, 404);
+
+  // POST /admin/tenants/:id/settings
+  //   { card_number?, card_holder?, usdt_trc20_address?, min_deposit_usd?, referral_percent? }
+  if (parts[3] === 'settings' && parts.length === 4) {
+    const allowed = ['card_number', 'card_holder', 'usdt_trc20_address', 'min_deposit_usd', 'referral_percent'];
+    const entries = Object.entries(body).filter(([k]) => allowed.includes(k));
+    if (!entries.length) return json({ error: 'no valid keys', allowed }, 400);
+    if (body.usdt_trc20_address && !/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(String(body.usdt_trc20_address))) {
+      return json({ error: 'invalid TRON address' }, 400);
+    }
+    await env.DB.batch(
+      entries.map(([k, v]) =>
+        env.DB.prepare(
+          'INSERT INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?) ON CONFLICT(tenant_id, key) DO UPDATE SET value = excluded.value',
+        ).bind(tenantId, k, String(v)),
+      ),
+    );
+    return json({ ok: true, updated: entries.map(([k]) => k) });
+  }
 
   // POST /admin/tenants/:id/categories  { title, parent_id?, sort? }
   if (parts[3] === 'categories' && parts.length === 4) {
