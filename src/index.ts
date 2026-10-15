@@ -1,6 +1,8 @@
 import { encrypt, randomHex, safeEq } from './crypto';
 import { getTenant, getUser } from './db';
 import { handleUpdate } from './handlers';
+import { handlePanelApi } from './panel-api';
+import { PANEL_HTML } from './panel_html';
 import { expireDeposits, pollUsdt } from './payments';
 import { releaseStalePending } from './purchase';
 import { tg } from './telegram';
@@ -18,6 +20,12 @@ export default {
 
     if (req.method === 'POST' && parts[0] === 'wh' && parts[1]) return webhook(req, env, ctx, parts[1]);
     if (parts[0] === 'admin') return admin(req, env, ctx, url, parts);
+    if (req.method === 'GET' && parts[0] === 'app' && /^[0-9a-f]{12}$/.test(parts[1] ?? '')) {
+      return new Response(PANEL_HTML.replace('__TENANT__', parts[1]), {
+        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+      });
+    }
+    if (parts[0] === 'api' && /^[0-9a-f]{12}$/.test(parts[1] ?? '')) return handlePanelApi(req, env, ctx, parts);
     return new Response('ok');
   },
 
@@ -45,7 +53,7 @@ async function webhook(req: Request, env: Env, ctx: ExecutionContext, tenantId: 
 
   const token = await getToken(env, tenant.id, tenant.token_enc);
   // Reply 200 immediately; process in background so Telegram never retries slow updates.
-  ctx.waitUntil(handleUpdate(env, tenant, token, update).catch((e) => console.error('update failed', tenant.id, e)));
+  ctx.waitUntil(handleUpdate(env, tenant, token, update, new URL(req.url).origin).catch((e) => console.error('update failed', tenant.id, e)));
   return new Response('ok');
 }
 

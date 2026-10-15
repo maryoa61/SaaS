@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>پنل مدیریت</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:var(--tg-theme-bg-color,#fff);--fg:var(--tg-theme-text-color,#111);--hint:var(--tg-theme-hint-color,#7a7a7a);--btn:var(--tg-theme-button-color,#2481cc);--btnfg:var(--tg-theme-button-text-color,#fff);--sec:var(--tg-theme-secondary-bg-color,#f1f1f2);--red:#d33;--green:#2a9d4a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;padding-bottom:84px}
+#app{padding:14px}
+h3{margin:18px 0 8px;font-size:15px}
+.hint{color:var(--hint)} .err{color:var(--red)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.card{background:var(--sec);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:2px}
+.card b{font-size:20px}
+.row{background:var(--sec);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.row .t{flex:1;min-width:0}
+.row .t div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row small{color:var(--hint)}
+.badge{font-size:12px;padding:2px 8px;border-radius:99px;background:var(--bg);color:var(--hint);white-space:nowrap}
+.badge.ok{color:var(--green)} .badge.low{color:var(--red)}
+button{border:0;border-radius:10px;padding:9px 14px;background:var(--btn);color:var(--btnfg);font:inherit;cursor:pointer}
+button.ghost{background:var(--sec);color:var(--fg)}
+button.danger{background:var(--red);color:#fff}
+button.sm{padding:5px 10px;font-size:13px}
+input,select,textarea{width:100%;padding:9px 10px;border-radius:10px;border:1px solid var(--sec);background:var(--sec);color:var(--fg);font:inherit;margin:4px 0 10px}
+textarea{min-height:80px}
+label{font-size:13px;color:var(--hint)}
+.bar{display:flex;gap:8px;margin-bottom:10px}
+.bar input{margin:0}
+#tabs{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--sec);padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
+#tabs button{flex:1;background:none;color:var(--hint);padding:4px 2px;font-size:11px;display:flex;flex-direction:column;align-items:center;gap:2px}
+#tabs button span{font-size:19px}
+#tabs button.on{color:var(--btn)}
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;z-index:10}
+#modal.hidden{display:none}
+#sheet{background:var(--bg);width:100%;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom))}
+#toast{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#222;color:#fff;padding:8px 14px;border-radius:99px;opacity:0;pointer-events:none;transition:.2s;z-index:20}
+#toast.on{opacity:1}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<nav id="tabs"></nav>
+<div id="modal" class="hidden"><div id="sheet"></div></div>
+<div id="toast"></div>
+<script>
+const T = "__TENANT__";
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const usd = (c) => "$" + (c / 100).toFixed(2);
+const when = (t) => new Date(t * 1000).toLocaleString("fa-IR");
+
+async function api(method, path, body) {
+  const r = await fetch("/api/" + T + path, {
+    method,
+    headers: { "content-type": "application/json", "X-Init-Data": tg ? tg.initData : "" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || "خطا " + r.status);
+  return j;
+}
+function toast(m) { const t = $("#toast"); t.textContent = m; t.classList.add("on"); setTimeout(() => t.classList.remove("on"), 2400); }
+function openModal(html) { $("#sheet").innerHTML = html; $("#modal").classList.remove("hidden"); }
+function closeModal() { $("#modal").classList.add("hidden"); }
+$("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
+async function act(fn, ok) { try { const r = await fn(); if (ok) toast(typeof ok === "function" ? ok(r) : ok); } catch (e) { toast(e.message); } }
+
+let tab = "overview";
+let cats = [];
+let products = [];
+const TABS = [["overview", "📊", "نمای کلی"], ["products", "📦", "محصولات"], ["categories", "🗂", "دسته‌ها"], ["deposits", "💳", "شارژها"], ["settings", "⚙️", "تنظیمات"]];
+
+function renderTabs() {
+  $("#tabs").innerHTML = TABS.map(([k, i, l]) => `<button class="${k === tab ? "on" : ""}" data-k="${k}"><span>${i}</span>${l}</button>`).join("");
+  document.querySelectorAll("#tabs button").forEach((b) => (b.onclick = () => go(b.dataset.k)));
+}
+async function go(k) {
+  tab = k; renderTabs();
+  $("#app").innerHTML = '<p class="hint">در حال بارگذاری…</p>';
+  try { await views[k](); } catch (e) { $("#app").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+const catOptions = (sel) => '<option value="">— بدون دسته —</option>' + cats.map((c) => `<option value="${c.id}" ${String(c.id) === String(sel) ? "selected" : ""}>${esc(c.title)}</option>`).join("");
+
+function productModal(p) {
+  openModal(`<h3>${p ? "ویرایش محصول" : "محصول جدید"}</h3>
+    <label>نام</label><input id="f_title" value="${esc(p ? p.title : "")}">
+    <label>قیمت (دلار)</label><input id="f_price" inputmode="decimal" value="${p ? p.price_cents / 100 : ""}">
+    <label>دسته</label><select id="f_cat">${catOptions(p ? p.category_id : "")}</select>
+    <label>توضیحات</label><textarea id="f_desc">${esc(p ? p.description : "")}</textarea>
+    ${p ? `<label><input type="checkbox" id="f_active" ${p.is_active ? "checked" : ""} style="width:auto;margin:0 0 0 6px">فعال</label>` : ""}
+    <div class="bar" style="margin-top:12px"><button id="save">ذخیره</button><button class="ghost" id="cancel">بستن</button></div>
+    ${p ? `<h3>افزودن موجودی (هر خط یک آیتم)</h3><textarea id="f_items" placeholder="email:password یا کد"></textarea><button id="addItems">افزودن آیتم‌ها</button><p class="hint">موجودی فعلی: ${p.avail} · فروخته‌شده: ${p.sold}</p>` : ""}`);
+  $("#cancel").onclick = closeModal;
+  $("#save").onclick = () => act(async () => {
+    const body = { title: $("#f_title").value.trim(), price_usd: Number($("#f_price").value.replace(",", ".")), category_id: $("#f_cat").value ? Number($("#f_cat").value) : null, description: $("#f_desc").value.trim() || null };
+    if (p) { body.is_active = $("#f_active").checked ? 1 : 0; await api("PATCH", "/products/" + p.id, body); } else await api("POST", "/products", body);
+    closeModal(); go("products");
+  }, "ذخیره شد");
+  if (p) $("#addItems").onclick = () => act(async () => {
+    const r = await api("POST", "/products/" + p.id + "/items", { text: $("#f_items").value });
+    closeModal(); go("products"); return r;
+  }, (r) => r.added + " آیتم اضافه شد");
+}
+
+function categoryModal(c) {
+  openModal(`<h3>${c ? "ویرایش دسته" : "دسته جدید"}</h3>
+    <label>نام</label><input id="g_title" value="${esc(c ? c.title : "")}">
+    <label>دسته‌ی والد</label><select id="g_parent">${catOptions(c ? c.parent_id : "")}</select>
+    <label>ترتیب نمایش (عدد کوچک‌تر بالاتر)</label><input id="g_sort" inputmode="numeric" value="${c ? c.sort : 0}">
+    ${c ? `<label><input type="checkbox" id="g_active" ${c.is_active ? "checked" : ""} style="width:auto;margin:0 0 0 6px">فعال</label>` : ""}
+    <div class="bar" style="margin-top:12px"><button id="save">ذخیره</button><button class="ghost" id="cancel">بستن</button></div>`);
+  $("#cancel").onclick = closeModal;
+  $("#save").onclick = () => act(async () => {
+    const body = { title: $("#g_title").value.trim(), parent_id: $("#g_parent").value ? Number($("#g_parent").value) : null, sort: Number($("#g_sort").value) || 0 };
+    if (c) { body.is_active = $("#g_active").checked ? 1 : 0; await api("PATCH", "/categories/" + c.id, body); } else await api("POST", "/categories", body);
+    closeModal(); go("categories");
+  }, "ذخیره شد");
+}
+
+const DEP_LABEL = { awaiting: "در انتظار پرداخت", pending_review: "نیاز به بررسی", paid: "پرداخت‌شده", rejected: "ردشده", expired: "منقضی" };
+const FIELDS = [["card_number", "شماره کارت (خالی = غیرفعال)"], ["card_holder", "نام صاحب کارت"], ["usdt_trc20_address", "آدرس USDT TRC20 (خالی = غیرفعال)"], ["min_deposit_usd", "حداقل شارژ (دلار)"], ["referral_percent", "درصد پاداش دعوت (۰ = غیرفعال)"], ["usd_to_toman", "نرخ دلار (تومان)"], ["support_hours", "ساعت پاسخگویی پشتیبانی"], ["welcome_text", "متن خوش‌آمدگویی"]];
+
+const views = {
+  async overview() {
+    const d = await api("GET", "/overview");
+    $("#app").innerHTML = `<div class="grid">
+      <div class="card"><b>${d.users}</b><span class="hint">کاربران</span></div>
+      <div class="card"><b>${d.orders}</b><span class="hint">سفارش‌ها</span></div>
+      <div class="card"><b>${usd(d.revenue_cents)}</b><span class="hint">مجموع فروش</span></div>
+      <div class="card"><b>${d.pending_deposits}</b><span class="hint">شارژ در انتظار بررسی</span></div></div>
+      <h3>کمترین موجودی</h3>
+      ${d.low_stock.map((p) => `<div class="row"><div class="t"><div>${esc(p.title)}</div></div><span class="badge ${p.avail > 2 ? "ok" : "low"}">${p.avail} عدد</span></div>`).join("") || '<p class="hint">محصولی نیست.</p>'}
+      <h3>آخرین سفارش‌ها</h3>
+      ${d.recent_orders.map((o) => `<div class="row"><div class="t"><div>#${o.id} ${esc(o.title)}</div><small>${esc(o.user_id)} · ${when(o.created_at)}</small></div><span class="badge">${usd(o.price_cents)}</span></div>`).join("") || '<p class="hint">سفارشی نیست.</p>'}`;
+  },
+  async products() {
+    const [p, c] = await Promise.all([api("GET", "/products"), api("GET", "/categories")]);
+    products = p.products; cats = c.categories;
+    $("#app").innerHTML = '<div class="bar"><input id="q" placeholder="جستجو…"><button id="add">＋ محصول</button></div><div id="list"></div>';
+    const draw = () => {
+      const q = $("#q").value.trim().toLowerCase();
+      $("#list").innerHTML = products.filter((x) => !q || x.title.toLowerCase().includes(q)).map((x) => `<div class="row" data-id="${x.id}"><div class="t"><div>${esc(x.title)}${x.is_active ? "" : " ⛔"}</div><small>${usd(x.price_cents)} · فروش ${x.sold}</small></div><span class="badge ${x.avail > 2 ? "ok" : "low"}">${x.avail} عدد</span></div>`).join("") || '<p class="hint">محصولی نیست.</p>';
+      document.querySelectorAll("#list .row").forEach((r) => (r.onclick = () => productModal(products.find((x) => String(x.id) === r.dataset.id))));
+    };
+    $("#q").oninput = draw; $("#add").onclick = () => productModal(null); draw();
+  },
+  async categories() {
+    const c = await api("GET", "/categories");
+    cats = c.categories;
+    const name = (id) => { const x = cats.find((y) => y.id === id); return x ? x.title : ""; };
+    $("#app").innerHTML = '<div class="bar"><button id="add">＋ دسته جدید</button></div>' + (cats.map((x) => `<div class="row" data-id="${x.id}"><div class="t"><div>${esc(x.title)}${x.is_active ? "" : " ⛔"}</div><small>${x.parent_id ? "زیرمجموعه‌ی " + esc(name(x.parent_id)) : "دسته‌ی اصلی"}</small></div></div>`).join("") || '<p class="hint">دسته‌ای نیست.</p>');
+    $("#add").onclick = () => categoryModal(null);
+    document.querySelectorAll(".row[data-id]").forEach((r) => (r.onclick = () => categoryModal(cats.find((x) => String(x.id) === r.dataset.id))));
+  },
+  async deposits() {
+    const d = await api("GET", "/deposits");
+    $("#app").innerHTML = `<h3>شارژ دستی کاربر</h3>
+      <label>آیدی عددی تلگرام کاربر</label><input id="c_uid" inputmode="numeric">
+      <label>مبلغ (دلار)</label><input id="c_amt" inputmode="decimal">
+      <button id="c_go">شارژ کیف پول</button>
+      <h3>درخواست‌های شارژ</h3><p class="hint">برای دیدن عکس رسید، پیام همان درخواست را در چت ربات ببینید.</p>
+      ${d.deposits.map((x) => `<div class="row"><div class="t"><div>${esc(x.first_name || "")} ${x.username ? "@" + esc(x.username) : ""} <small>(${esc(x.user_id)})</small></div><small>${x.method === "card" ? "کارت" : "USDT"} · ${usd(x.amount_cents)} · ${DEP_LABEL[x.status] || esc(x.status)}</small></div>${x.status === "pending_review" ? `<button class="sm" data-a="approve" data-id="${x.id}">✅</button><button class="sm danger" data-a="reject" data-id="${x.id}">❌</button>` : ""}</div>`).join("") || '<p class="hint">درخواستی نیست.</p>'}`;
+    $("#c_go").onclick = () => act(async () => {
+      await api("POST", "/users/" + Number($("#c_uid").value) + "/credit", { amount_usd: Number($("#c_amt").value.replace(",", ".")) });
+      go("deposits");
+    }, "کیف پول شارژ شد");
+    document.querySelectorAll("button[data-a]").forEach((b) => (b.onclick = () => act(async () => {
+      await api("POST", "/deposits/" + b.dataset.id + "/" + b.dataset.a);
+      go("deposits");
+    }, b.dataset.a === "approve" ? "تأیید شد" : "رد شد")));
+  },
+  async settings() {
+    const s = await api("GET", "/settings");
+    $("#app").innerHTML = FIELDS.map(([k, l]) => `<label>${l}</label>` + (k === "welcome_text" ? `<textarea id="s_${k}">${esc(s[k] || "")}</textarea>` : `<input id="s_${k}" value="${esc(s[k] == null ? "" : s[k])}">`)).join("") + '<button id="s_save">ذخیره تنظیمات</button>';
+    $("#s_save").onclick = () => act(async () => {
+      const body = {};
+      FIELDS.forEach(([k]) => (body[k] = $("#s_" + k).value.trim()));
+      await api("POST", "/settings", body);
+    }, "تنظیمات ذخیره شد");
+  },
+};
+
+if (!tg || !tg.initData) {
+  $("#app").innerHTML = '<p class="err">این پنل فقط داخل تلگرام (از دکمه‌ی «پنل» ربات) باز می‌شود.</p>';
+} else {
+  go("overview");
+}
+</script>
+</body>
+</html>

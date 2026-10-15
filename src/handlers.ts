@@ -30,8 +30,8 @@ import {
   type View,
 } from './views';
 
-export async function handleUpdate(env: Env, tenant: Tenant, token: string, update: any): Promise<void> {
-  if (update.message) return onMessage(env, tenant, token, update.message);
+export async function handleUpdate(env: Env, tenant: Tenant, token: string, update: any, origin: string): Promise<void> {
+  if (update.message) return onMessage(env, tenant, token, update.message, origin);
   if (update.callback_query) return onCallback(env, tenant, token, update.callback_query);
 }
 
@@ -42,7 +42,7 @@ const sendView = (token: string, chatId: number, v: View) => say(token, chatId, 
 
 const MENU_ROW = [{ text: '🏠 منو', callback_data: 'm' }];
 
-async function onMessage(env: Env, tenant: Tenant, token: string, msg: any) {
+async function onMessage(env: Env, tenant: Tenant, token: string, msg: any, origin: string) {
   if (!msg.from || msg.chat?.type !== 'private') return;
   const text: string = typeof msg.text === 'string' ? msg.text.trim() : '';
   const hasPhoto = Array.isArray(msg.photo) && msg.photo.length > 0;
@@ -59,6 +59,14 @@ async function onMessage(env: Env, tenant: Tenant, token: string, msg: any) {
   }
   const user = await upsertUser(env.DB, tenant.id, msg.from, referrer);
   const send = (t: string, markup?: unknown) => say(token, chatId, t, markup);
+
+  // Owner-only: open the management mini app
+  if (text === '/panel') {
+    if (uid !== tenant.owner_tg_id) return void (await send('این دستور فقط برای مدیر فروشگاه است.'));
+    const url = `${origin}/app/${tenant.id}`;
+    await tg(token, 'setChatMenuButton', { chat_id: uid, menu_button: { type: 'web_app', text: '🛠 پنل', web_app: { url } } }).catch(() => {});
+    return void (await send('🛠 <b>پنل مدیریت فروشگاه</b>', { inline_keyboard: [[{ text: 'باز کردن پنل', web_app: { url } }]] }));
+  }
 
   // Menu buttons / commands always win over any pending state.
   if (text.startsWith('/start')) {
